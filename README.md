@@ -3,5 +3,8 @@
 
 CLI installer app built in Rust to facilitate in delivering the correct mod and config files to Minecraft modded players. Utilizes a Python Flask API and md5 hashing. Quafuzzii is the name of the Minecraft server. FYI.
 
+## Usage
+Put executable in `.minecraft` folder and run. 
+
 ## Building
 Clone this repo and run `cargo build`. Make sure to provide a server URL, and the correct secret token, or else it won't work.
