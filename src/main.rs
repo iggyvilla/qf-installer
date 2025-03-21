@@ -28,6 +28,11 @@ struct ApiInfoResponse {
     season: u32,
 }
 
+#[derive(serde::Deserialize)]
+struct ApiDeprecatedResponse {
+    deprecated_files: Vec<String>
+}
+
 #[tokio::main(flavor = "multi_thread", worker_threads = 4)]
 async fn main() {
 
@@ -38,7 +43,7 @@ async fn main() {
     let indent = "   ";
 
     // Setup `reqwest` client
-    let url = "<api_url>";
+    let url = "<server url>";
     let client = reqwest::Client::new();
 
     /* ****** CHECK IF SERVER ALIVE ****** */
@@ -108,10 +113,26 @@ async fn main() {
     }
 
     // funny rust lifetime stuff
-    let hashlist = hashlist.unwrap();
+    let hashlist: Value = hashlist.unwrap();
     let mut hashlist = hashlist.as_object().unwrap().to_owned();
 
-    // get supported folders from API response
+    // TODO: clean up
+
+    let res = client
+        .get(format!("{}{}", url , "/deprecatedfiles"))
+        .query(&[("secret", "<secret>")])
+        .timeout(Duration::from_secs(5))
+        .send().await;
+
+    let req = res
+        .unwrap()
+        .json::<ApiDeprecatedResponse>()
+        .await
+        .unwrap();
+
+    let deprecated_list = req.deprecated_files;
+
+    // get folders that we're watching from API response
     // (in this case, get each folder that every path starts with)
     let mut supported_folders: Vec<String> = vec![];
     for key in hashlist.keys() {
@@ -125,7 +146,7 @@ async fn main() {
     pb.finish_with_message(
         format!(
             "{} Watching {} folders: {} (total of {} files).",
-            "📋 Hashlist retrieved!".green().bold(),
+            "📋 Filelist retrieved!".green().bold(),
             supported_folders.len().to_string().green(),
             supported_folders
                 .iter()
@@ -149,18 +170,24 @@ async fn main() {
     let offset_path = env::current_exe().unwrap().parent().unwrap().display().to_string();
 
     // TODO: this can be cleaner by having a new struct with properties path, and is_modified
+
     // all user files
     let mut files: Vec<String> = vec![];
     // files that are supported, but modified
     let mut files_supp_mod: Vec<String> = vec![];
     // files that aren't supported
     let mut files_not_supp: Vec<String> = vec![];
+    // files that are deprecated
+    let mut files_deprecated: Vec<String> = vec![];
 
+    // this just simply gets the list of files in the
+    // folder that the executable is in
     for entry in WalkDir::new(&offset_path) {
         let dir = entry.unwrap();
         let dir = dir.path();
 
         if metadata(dir).unwrap().is_file() {
+            // to_slash() because different OS's use different separators
             let full_path = dir.to_slash().unwrap();
 
             // path used by the API (e.g., mods/mod.jar)
@@ -173,13 +200,12 @@ async fn main() {
         }
     }
 
-    // go through each file in files, and if the hashes are the same, remove it
-    // once this process is done, we will have a list of files to download
+    /* go through each file in detected files, and if the hashes are the same, remove it
+     * once this process is done, we will have a list of files to download */
     for path in files {
         pb.set_message(format!("{} {} {}", "🔍 Checking".dimmed(), path.dimmed().bold(), "...".dimmed()));
 
-        // let full_path = format!("{}{}{}", offset_path, "/", path);
-
+        // keep in mind that `path` is only mods/mod.jar, not the absolute directory
         let off_path = Path::new(&offset_path);
         let full_path = off_path.join(&path);
 
@@ -190,14 +216,20 @@ async fn main() {
 
         let md5_hash = md5::chksum(file).unwrap().to_hex_lowercase();
 
+        // if the files hash is tagged as deprecated, and it hasn't been disabled yet
+        if deprecated_list.contains(&md5_hash) && !path.ends_with(".disabled") {
+            files_deprecated.push(path.clone());
+            continue
+        }
+
         match hashlist.get(path.as_str()) {
             Some(T) => {
                 // server has the file's hash in stock
                 // if the hash is the same, ignore
                 let server_hash = T.to_string();
 
-                // server hash includes quotation marks around key, so
-                // .trim_matches() removes it
+                // server hash includes quotation marks around key
+                // (sverde serialization), so .trim_matches() removes it
                 if !(md5_hash == server_hash.trim_matches('\"')) {
                     // if file is supported but hash is different
                     files_supp_mod.push(path.to_owned());
@@ -205,7 +237,9 @@ async fn main() {
             },
             _ => {
                 // file is not supported, only warn user
-                files_not_supp.push(path.to_owned());
+                if !path.ends_with(".disabled") {
+                    files_not_supp.push(path.to_owned());
+                }
             }
         }
 
@@ -230,16 +264,17 @@ async fn main() {
         println!(
             "{}{}\n{}consider removing them if any crashing occurs:",
             indent,
-            "These files are not supported!".yellow().bold(),
+            "These files are not supported!".on_yellow().bold(),
             indent
         );
+        // don't need .iter() here, array no longer needed, can destroy
         for file in files_not_supp {
             println!("{}  {} {}", indent, "-->".bold().dimmed(), file.italic())
         }
     } else {
         println!("\n\n{}{}",
                  indent,
-                 "No unsupported files!".bold().green());
+                 "No unsupported files!".bold().on_green());
     }
 
     println!();
@@ -249,7 +284,7 @@ async fn main() {
         println!(
             "{}{}\n{}and will be disabled (with your permission) and updated:",
             indent,
-            "These files are outdated/modified".yellow().bold(),
+            "These files are supported, but different from the server's".on_red().bold(),
             indent
         );
         for (idx, file) in files_supp_mod.iter().enumerate() {
@@ -259,7 +294,26 @@ async fn main() {
     } else {
         println!("{}{}",
                  indent,
-                 "No modified files!".bold().green());
+                 "No modified files!".bold().on_green());
+    }
+
+    println!();
+
+    // inform deprecated files
+    if !files_deprecated.is_empty() {
+        println!(
+            "{}{}\n{}and will be disabled:",
+            indent,
+            "These files are deprecated (i.e., no longer supported)".on_red().bold(),
+            indent
+        );
+        for file in files_deprecated.iter() {
+            println!("{}  {} {}", indent, "-->".bold().dimmed(), file.italic())
+        }
+    } else {
+        println!("{}{}",
+                 indent,
+                 "No deprecated files!".bold().on_green());
     }
 
     println!();
@@ -269,7 +323,7 @@ async fn main() {
         println!(
             "{}{}\n{}and will be downloaded from the CDN:",
             indent,
-            "These files are missing".red().bold(),
+            "These files are missing".on_red().bold(),
             indent
         );
         for (file, _) in &hashlist {
@@ -281,7 +335,7 @@ async fn main() {
             );
         }
     } else {
-        println!("{}{}", indent, "No missing files!".bold().green());
+        println!("{}{}", indent, "No missing files!".bold().on_green());
     }
 
     println!();
@@ -346,13 +400,22 @@ async fn main() {
     // hide modified files
     let pb = new_configured_spinner("⚙️  Disabling modified/outdated files...");
 
-    for fp in files_supp_mod.iter() {
+    // also disable deprecated files
+    for fp in files_supp_mod.iter().chain(&files_deprecated) {
 
-        let fp = offset_path.clone() + "/" + fp;
-        let fp = fp.as_str();
+        let offset_p = offset_path.clone();
+        let offset = Path::new(offset_p.as_str());
+        let fp = offset.join(&fp);
 
-        if let Err(E) = fs::rename(fp, format!("{}{}", fp, ".disabled").as_str()) {
-            println!("Error modifying file {}: {}. Please try again/run as administrator.", fp, E);
+        let file_name = fp.file_name().unwrap();
+        let buf = file_name.to_str().unwrap();
+        let disabled_name = fp.parent().unwrap().join(format!("{}.disabled", buf));
+
+        if let Err(E) = fs::rename(
+            &fp,
+            disabled_name
+            ) {
+            println!("Error modifying file {}: {}. Please try again/run as administrator.", &fp.display(), E);
             exit(0);
         }
     }
@@ -361,7 +424,7 @@ async fn main() {
         format!(
             "{} {} {}",
             "⚙️  Finished disabling".bold().green(),
-            files_supp_mod.len(),
+            files_supp_mod.len() + files_deprecated.len(),
             "files."
         )
     );
