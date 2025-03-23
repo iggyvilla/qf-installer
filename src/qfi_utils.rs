@@ -19,7 +19,7 @@ pub fn print_logo() {
              "         __ _\n".bold().bright_yellow(),
              "       / _(_)\n".bold().bright_yellow(),
              "  __ _| |_ _ \n".bold().bright_yellow(),
-             " / _` |  _| |".bold().bright_yellow(),  "Quafuzzii Installer v1.0\n".underline(),
+             " / _` |  _| |".bold().bright_yellow(),  "Quafuzzii Installer v1.1\n".underline(),
              "| (_| | | | |".bold().bright_yellow(),  "Iggy Villa (C) 2025\n".dimmed(),
              " \\__, |_| |_| \n".bold().bright_yellow(),
              "    | | \n".bold().bright_yellow(),
@@ -52,15 +52,15 @@ pub fn new_configured_spinner(message: &str) -> ProgressBar {
                 "{msg}"
             ).as_str()
         ).unwrap()
-        .tick_strings(&[
-            "▹▹▹▹▹",
-            "▸▹▹▹▹",
-            "▹▸▹▹▹",
-            "▹▹▸▹▹",
-            "▹▹▹▸▹",
-            "▹▹▹▹▸",
-            "▪▪▪▪▪",
-        ])
+            .tick_strings(&[
+                "▹▹▹▹▹",
+                "▸▹▹▹▹",
+                "▹▸▹▹▹",
+                "▹▹▸▹▹",
+                "▹▹▹▸▹",
+                "▹▹▹▹▸",
+                "▪▪▪▪▪",
+            ])
     );
 
     // to_owned() needed here because of some rust lifetime black magic

@@ -33,7 +33,8 @@ struct ApiDeprecatedResponse {
     deprecated_files: Vec<String>
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+#[feature(array_windows)]
 async fn main() {
 
     // Print `qfi` logo
@@ -43,7 +44,7 @@ async fn main() {
     let indent = "   ";
 
     // Setup `reqwest` client
-    let url = "<server url>";
+    let url = "http://139.180.185.205:11939";
     let client = reqwest::Client::new();
 
     /* ****** CHECK IF SERVER ALIVE ****** */
@@ -83,7 +84,7 @@ async fn main() {
 
     let res = client
         .get(format!("{}{}", url , "/hashlist"))
-        .query(&[("secret", "<secret>")])
+        .query(&[("secret", "inigostinkyface")])
         .timeout(Duration::from_secs(5))
         .send().await;
 
@@ -120,7 +121,7 @@ async fn main() {
 
     let res = client
         .get(format!("{}{}", url , "/deprecatedfiles"))
-        .query(&[("secret", "<secret>")])
+        .query(&[("secret", "inigostinkyface")])
         .timeout(Duration::from_secs(5))
         .send().await;
 
@@ -132,13 +133,21 @@ async fn main() {
 
     let deprecated_list = req.deprecated_files;
 
+    // the path to get to the mods folder
+    let offset_path = env::current_exe().unwrap().parent().unwrap().display().to_string();
+
     // get folders that we're watching from API response
     // (in this case, get each folder that every path starts with)
     let mut supported_folders: Vec<String> = vec![];
+    let mut supported_folders_long: Vec<String> = vec![];
     for key in hashlist.keys() {
         let root_folder = key.split("/").collect::<Vec<&str>>()[0].to_owned();
 
         if !supported_folders.contains(&&root_folder) {
+            let joined = Path::new(&offset_path).join(&root_folder);
+            let joined = joined.to_str().unwrap();
+
+            supported_folders_long.push(joined.to_owned());
             supported_folders.push(root_folder);
         }
     }
@@ -166,9 +175,6 @@ async fn main() {
     // use when in dev environment
     // let offset_path = format!("{}{}", env::current_exe().unwrap().display().to_string(), "/src");
 
-    // the path to get to the mods folder
-    let offset_path = env::current_exe().unwrap().parent().unwrap().display().to_string();
-
     // TODO: this can be cleaner by having a new struct with properties path, and is_modified
 
     // all user files
@@ -186,16 +192,19 @@ async fn main() {
         let dir = entry.unwrap();
         let dir = dir.path();
 
-        if metadata(dir).unwrap().is_file() {
-            // to_slash() because different OS's use different separators
-            let full_path = dir.to_slash().unwrap();
+        for supp_folder in supported_folders_long.iter() {
+            // if it isn't in a supported folder, just ignore it. also, it has to be a file.
+            if dir.to_str().unwrap().contains(supp_folder) && metadata(dir).unwrap().is_file() {
+                // to_slash() because different OS's use different separators
+                let full_path = dir.to_slash().unwrap();
 
-            // path used by the API (e.g., mods/mod.jar)
-            let sliced_path = (&full_path[offset_path.len()+1..full_path.len()]).to_owned();
+                // path used by the API (e.g., mods/mod.jar)
+                let sliced_path = (&full_path[offset_path.len()+1..full_path.len()]).to_owned();
 
-            // if its not in a directory, ignore
-            if sliced_path.contains("/") {
-                files.push(sliced_path);
+                // if its not in a directory, ignore
+                if sliced_path.contains("/") {
+                    files.push(sliced_path);
+                }
             }
         }
     }
@@ -339,6 +348,12 @@ async fn main() {
     }
 
     println!();
+    println!("{}{}", indent, "Press enter to continue...".dimmed());
+    let mut buf = String::new();
+    io::stdin()
+        .read_line(&mut buf)
+        .expect("Error reading line.");
+
 
     /* ****** PROCESS FILE REMOVAL WHITELIST ****** */
 
@@ -377,9 +392,9 @@ async fn main() {
                     } else {
                         println!(
                             "{} {}{}",
-                             "Invalid index:".italic().dimmed(),
-                             idx.to_string().italic().dimmed().bold(),
-                             ". Try again.".italic().dimmed()
+                            "Invalid index:".italic().dimmed(),
+                            idx.to_string().italic().dimmed().bold(),
+                            ". Try again.".italic().dimmed()
                         );
                         continue 'a;
                     }
@@ -414,7 +429,7 @@ async fn main() {
         if let Err(E) = fs::rename(
             &fp,
             disabled_name
-            ) {
+        ) {
             println!("Error modifying file {}: {}. Please try again/run as administrator.", &fp.display(), E);
             exit(0);
         }
@@ -439,83 +454,107 @@ async fn main() {
 
     if !files_dl.is_empty() {
         println!("\n");
-        println!("{}{} {}\n", indent, "📥 Downloading".bold().green(), "missing files...".bold());
+        println!("{}{} {} {}\n", indent, "📥 Downloading".bold().green(), files_dl.len().to_string().bold().green(), "missing files...".bold());
     }
 
     let m = MultiProgress::new();
 
     let mut tasks = Vec::with_capacity(files_dl.len());
 
-    for file in files_dl {
-        let url = format!("{}{}{}", url, "/getfile/", urlencoding::encode(file.as_str()));
+    let mut idx = 0;
+    let batch_download_size = 2;
 
-        let full_path = format!("{}{}{}", offset_path, "/", file);
+    'a: loop {
+        if files_dl.len() == 0 {
+            println!("\n\n{} {} Press enter to exit...", indent, "✅ Installer finished!".bold().green());
+            break 'a;
+        }
 
-        let res = match client
-            .get(url)
-            .query(&[("secret", "<secret>")])
-            .send()
-            .await {
+        'b: loop {
+            let file = files_dl[idx.clone()].clone();
 
-            Ok(T) => T,
-            Err(_) => {
-                println!("{}", format_error_str("download_file_get"));
-                exit(0);
+            let url = format!("{}{}{}", url, "/getfile/", urlencoding::encode(file.as_str()));
+
+            let full_path = format!("{}{}{}", offset_path, "/", file);
+
+            let res = match client
+                .get(url)
+                .query(&[("secret", "inigostinkyface")])
+                .send()
+                .await {
+
+                Ok(T) => T,
+                Err(_) => {
+                    println!("{}", format_error_str("download_file_get"));
+                    exit(0);
+                }
+            };
+
+            let total_size = res.content_length().unwrap();
+
+            let pb = m.add(ProgressBar::new(total_size));
+            pb.set_style(
+                ProgressStyle::with_template(
+                    format!(
+                        "{}{}{}{}",
+                        "[".dimmed().bold(),
+                        "{spinner:.dim.bold}",
+                        "] ".dimmed().bold(),
+                        "{wide_msg:.italic} {bytes}/{total_bytes} ({elapsed:.dim}) ").as_str()
+                ).unwrap()
+                    .tick_strings(&[
+                        "▹▹▹▹▹",
+                        "▸▹▹▹▹",
+                        "▹▸▹▹▹",
+                        "▹▹▸▹▹",
+                        "▹▹▹▸▹",
+                        "▹▹▹▹▸",
+                        "▪▪▪▪▪",
+                    ])
+            );
+
+            pb.set_message(file);
+
+            // do downloads asynchronously
+            tasks.push(
+                tokio::spawn( async move {
+                    download_file(
+                        res,
+                        full_path,
+                        pb,
+                        total_size.clone(),
+                    ).await
+                })
+            );
+
+            if (((&idx + 1) % &batch_download_size) == 0) || (&idx + 1 == files_dl.len()) {
+                break 'b;
             }
-        };
 
-        let total_size = res.content_length().unwrap();
+            idx += 1;
+        }
 
-        let pb = m.add(ProgressBar::new(total_size));
-        pb.set_style(
-            ProgressStyle::with_template(
-                format!(
-                    "{}{}{}{}",
-                    "[".dimmed().bold(),
-                    "{spinner:.dim.bold}",
-                    "] ".dimmed().bold(),
-                    "{wide_msg:.italic} {bytes}/{total_bytes} ({elapsed:.dim}) ").as_str()
-            ).unwrap()
-            .tick_strings(&[
-                "▹▹▹▹▹",
-                "▸▹▹▹▹",
-                "▹▸▹▹▹",
-                "▹▹▸▹▹",
-                "▹▹▹▸▹",
-                "▹▹▹▹▸",
-                "▪▪▪▪▪",
-            ])
-        );
+        let mut outputs = Vec::with_capacity(tasks.len());
 
-        pb.set_message(file);
+        for task in tasks.drain(..) {
+            outputs.push(task
+                .await
+                .unwrap()
+            );
+        }
 
-        // do downloads asynchronously
-        tasks.push(
-        tokio::spawn( async move {
-                download_file(
-                    res,
-                    full_path,
-                    pb,
-                    total_size.clone(),
-                ).await
-            })
-        );
+        tasks.clear();
+
+        idx += 1;
+
+        if idx == files_dl.len() {
+            println!("\n\n{} {} Press enter to exit...", indent, "✅ Installer finished!".bold().green());
+            break 'a;
+        }
     }
-
-    let mut outputs = Vec::with_capacity(tasks.len());
-
-    for task in tasks {
-        outputs.push(task
-            .await
-            .unwrap()
-        );
-    }
-
-    println!("\n\n{} {} Press enter to exit...", indent, "✅ Installer finished!".bold().green());
 
     let mut buf: String = String::new();
     io::stdin()
         .read_line(&mut buf)
         .expect("Error reading line.");
-
 }
